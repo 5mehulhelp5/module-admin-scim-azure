@@ -2,8 +2,7 @@
 
 > Microsoft Entra ID SCIM provisioning for Magento 2 admin users.
 
-[![CI](https://github.com/dmlab-work/module-admin-scim-azure/actions/workflows/ci.yml/badge.svg)](https://github.com/dmlab-work/module-admin-scim-azure/actions/workflows/ci.yml) [![codecov](https://codecov.io/gh/dmlab-work/module-admin-scim-azure/graph/badge.svg)](https://codecov.io/gh/dmlab-work/module-admin-scim-azure) [![Packagist](https://img.shields.io/packagist/dt/dmlab/module-admin-scim-azure)](https://packagist.org/packages/dmlab/module-admin-scim-azure)
-![License](https://img.shields.io/badge/license-OSL--3.0-green) ![Magento](https://img.shields.io/badge/Magento-2.4-orange) ![PHP](https://img.shields.io/badge/PHP-8.3--8.5-blue) ![Version](https://img.shields.io/badge/version-0.2.0-lightgrey)
+[![CI](https://github.com/dmlab-work/module-admin-scim-azure/actions/workflows/ci.yml/badge.svg)](https://github.com/dmlab-work/module-admin-scim-azure/actions/workflows/ci.yml) [![codecov](https://codecov.io/gh/dmlab-work/module-admin-scim-azure/graph/badge.svg)](https://codecov.io/gh/dmlab-work/module-admin-scim-azure) [![Packagist Version](https://img.shields.io/packagist/v/dmlab/module-admin-scim-azure)](https://packagist.org/packages/dmlab/module-admin-scim-azure) [![Downloads](https://img.shields.io/packagist/dt/dmlab/module-admin-scim-azure)](https://packagist.org/packages/dmlab/module-admin-scim-azure) [![PHP](https://img.shields.io/packagist/dependency-v/dmlab/module-admin-scim-azure/php)](https://packagist.org/packages/dmlab/module-admin-scim-azure) [![License](https://img.shields.io/packagist/l/dmlab/module-admin-scim-azure)](LICENSE) ![Magento](https://img.shields.io/badge/Magento-2.4-orange)
 
 A thin Microsoft Entra ID (formerly Azure AD) provider plugin for the `dmlab/module-admin-scim` (`^0.2.0`) SCIM 2.0 server. It canonicalizes Entra's remaining non-RFC request shapes and documents the Entra-side setup.
 
