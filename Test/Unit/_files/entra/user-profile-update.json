@@ -1,0 +1,22 @@
+{
+    "schemas": ["urn:ietf:params:scim:api:messages:2.0:PatchOp"],
+    "Operations": [
+        {"op": "Replace", "path": "name.givenName", "value": "Jane"},
+        {"op": "Replace", "path": "name.familyName", "value": "Doe"},
+        {"op": "Replace", "path": "name.formatted", "value": "Jane Doe"},
+        {"op": "Replace", "path": "userName", "value": "jane.doe@contoso.com"},
+        {"op": "Replace", "path": "externalId", "value": "jane.doe"},
+        {"op": "Replace", "path": "preferredLanguage", "value": "en-US"},
+        {"op": "Replace", "path": "phoneNumbers[type eq \"work\"].value", "value": "+1 555 0100"},
+        {"op": "Replace", "path": "addresses[type eq \"work\"].locality", "value": "Redmond"},
+        {"op": "Replace", "path": "urn:ietf:params:scim:schemas:core:2.0:User:active", "value": "True"},
+        {
+            "op": "Replace",
+            "value": {
+                "displayName": "Jane Doe",
+                "name.givenName": "Jane",
+                "urn:ietf:params:scim:schemas:extension:enterprise:2.0:User:department": "Sales"
+            }
+        }
+    ]
+}

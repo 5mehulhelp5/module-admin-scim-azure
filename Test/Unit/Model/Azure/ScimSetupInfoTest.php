@@ -1,6 +1,7 @@
 <?php
 /**
  * Copyright © DMLab. All rights reserved.
+ * Licensed under the Open Software License version 3.0 (OSL-3.0). See LICENSE.
  */
 declare(strict_types=1);
 
@@ -56,11 +57,38 @@ class ScimSetupInfoTest extends TestCase
     public function testHtmlEscapesTheEndpointThroughTheEscaper(): void
     {
         $escaper = $this->createStub(Escaper::class);
-        $escaper->method('escapeHtml')->willReturn('ESCAPED_ENDPOINT');
+        $escaper->method('escapeHtml')->willReturnCallback(
+            static fn ($value) => $value === self::ENDPOINT ? 'ESCAPED_ENDPOINT' : $value
+        );
 
         $html = (new ScimSetupInfo($this->urlBuilder, $escaper))->getHtml();
 
-        self::assertStringContainsString('ESCAPED_ENDPOINT', $html);
+        self::assertStringContainsString('<code>ESCAPED_ENDPOINT</code>', $html);
+        self::assertStringNotContainsString(self::ENDPOINT, $html);
+    }
+
+    public function testEveryPhraseIsEscaped(): void
+    {
+        $escaper = $this->createStub(Escaper::class);
+        $escaper->method('escapeHtml')->willReturnCallback(static fn ($value) => '[' . $value . ']');
+
+        $html = (new ScimSetupInfo($this->urlBuilder, $escaper))->getHtml();
+
+        self::assertStringContainsString('<strong>[Tenant URL:]</strong>', $html);
+        self::assertStringContainsString(
+            '<em>[Stores → Configuration → DMLab → Admin SCIM → Provider = azure]</em>',
+            $html
+        );
+        $unescaped = preg_replace(['/\[[^\]]*\]/u', '/<[^>]*>/u'], '', $html);
+        self::assertMatchesRegularExpression('/^[\s.]*$/u', $unescaped, 'Unescaped text in: ' . $html);
+    }
+
+    public function testHtmlDocumentsTheProviderStep(): void
+    {
+        self::assertStringContainsString(
+            'Stores → Configuration → DMLab → Admin SCIM → Provider = azure',
+            $this->setupInfo->getHtml()
+        );
     }
 
     public function testHtmlDocumentsSecretTokenAndProvisioningGuidance(): void
@@ -68,17 +96,26 @@ class ScimSetupInfoTest extends TestCase
         $html = $this->setupInfo->getHtml();
 
         self::assertStringContainsString('Secret Token', $html);
-        self::assertStringContainsString('bearer token', $html);
-        self::assertStringContainsString('active = false', $html);
+        self::assertStringContainsString('Bearer Token', $html);
+        self::assertStringContainsString('active = "False"', $html);
+        self::assertStringContainsString('are ignored', $html);
     }
 
-    public function testHtmlDocumentsThe204FriendlyResponseWithoutRequiringAToggle(): void
+    public function testHtmlDoesNotClaimANativeFalseDeactivation(): void
     {
-        $html = $this->setupInfo->getHtml();
+        self::assertStringNotContainsString('active = false', $this->setupInfo->getHtml());
+    }
 
-        // The core answers PATCH with 200 + resource, which Entra accepts; 204 is
-        // merely also acceptable, so no per-provider response-mode toggle exists.
-        self::assertStringContainsString('200', $html);
-        self::assertStringContainsString('204', $html);
+    public function testHtmlDocumentsTheHardDelete(): void
+    {
+        self::assertStringContainsString(
+            'a hard delete in Entra sends DELETE /Users/{id}, which hard-deletes the SCIM-managed admin.',
+            $this->setupInfo->getHtml()
+        );
+    }
+
+    public function testHtmlDocumentsThePatchResponse(): void
+    {
+        self::assertStringContainsString('PATCH is answered with 200', $this->setupInfo->getHtml());
     }
 }

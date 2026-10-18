@@ -1,6 +1,7 @@
 <?php
 /**
  * Copyright © DMLab. All rights reserved.
+ * Licensed under the Open Software License version 3.0 (OSL-3.0). See LICENSE.
  */
 declare(strict_types=1);
 
@@ -14,6 +15,7 @@ use PHPUnit\Framework\TestCase;
 class AzureRequestNormalizerTest extends TestCase
 {
     private const ENTERPRISE = 'urn:ietf:params:scim:schemas:extension:enterprise:2.0:User';
+    private const CORE = 'urn:ietf:params:scim:schemas:core:2.0:User';
 
     /** @var AzureRequestNormalizer */
     private AzureRequestNormalizer $normalizer;
@@ -28,152 +30,284 @@ class AzureRequestNormalizerTest extends TestCase
         self::assertInstanceOf(RequestNormalizerInterface::class, $this->normalizer);
     }
 
-    // --- Deviation 1: flat complex-attribute PATCH -> nested ---------------
+    // --- Extension shapes pass through ------------------------------------
 
-    public function testFlatExtensionPathIsUnflattenedToNestedValue(): void
+    #[DataProvider('enterprisePathProvider')]
+    public function testEnterprisePathPassesThroughByteIdentical(string $op, string $path): void
     {
-        $result = $this->normalizer->normalize(
-            RequestNormalizerInterface::RESOURCE_USER,
-            'PATCH',
-            ['Operations' => [[
-                'op' => 'add',
-                'path' => self::ENTERPRISE . ':department',
-                'value' => 'Engineering',
-            ]]]
-        );
+        $payload = ['Operations' => [['op' => $op, 'path' => $path, 'value' => 'Sales']]];
 
-        $op = $result['Operations'][0];
-        self::assertSame(self::ENTERPRISE, $op['path']);
-        self::assertSame(['department' => 'Engineering'], $op['value']);
+        self::assertSame(
+            $payload,
+            $this->normalizer->normalize(RequestNormalizerInterface::RESOURCE_USER, 'PATCH', $payload)
+        );
     }
 
-    public function testFlatExtensionPathWithDotSeparatorIsUnflattened(): void
+    /**
+     * @return array<string,array{0:string,1:string}>
+     */
+    public static function enterprisePathProvider(): array
     {
-        // Entra also emits the schema URI joined to the attribute with a dot.
-        $result = $this->normalizer->normalize(
-            RequestNormalizerInterface::RESOURCE_USER,
-            'PATCH',
-            ['Operations' => [[
-                'op' => 'replace',
-                'path' => self::ENTERPRISE . '.costCenter',
-                'value' => '4130',
-            ]]]
-        );
-
-        $op = $result['Operations'][0];
-        self::assertSame(self::ENTERPRISE, $op['path']);
-        self::assertSame(['costCenter' => '4130'], $op['value']);
+        return [
+            'colon' => ['Add', self::ENTERPRISE . ':department'],
+            'dot' => ['Replace', self::ENTERPRISE . '.costCenter'],
+            'bare urn' => ['replace', self::ENTERPRISE],
+        ];
     }
 
-    public function testPathlessFlatExtensionKeysAreNested(): void
+    public function testEnterpriseRemoveWithoutValuePassesThrough(): void
     {
-        $result = $this->normalizer->normalize(
-            RequestNormalizerInterface::RESOURCE_USER,
-            'PATCH',
-            ['Operations' => [[
-                'op' => 'add',
-                'value' => [
-                    self::ENTERPRISE . ':department' => 'Sales',
-                    self::ENTERPRISE . ':costCenter' => '4130',
-                    'displayName' => 'Jane Doe',
-                ],
-            ]]]
-        );
+        $payload = ['Operations' => [['op' => 'Remove', 'path' => self::ENTERPRISE . ':manager']]];
 
-        $value = $result['Operations'][0]['value'];
-        self::assertSame(['department' => 'Sales', 'costCenter' => '4130'], $value[self::ENTERPRISE]);
-        self::assertSame('Jane Doe', $value['displayName']);
+        self::assertSame(
+            $payload,
+            $this->normalizer->normalize(RequestNormalizerInterface::RESOURCE_USER, 'PATCH', $payload)
+        );
     }
 
-    public function testTopLevelFlatExtensionKeyIsNestedOnCreate(): void
+    public function testPathlessEnterpriseKeysPassThrough(): void
     {
-        $result = $this->normalizer->normalize(
-            RequestNormalizerInterface::RESOURCE_USER,
-            'POST',
-            [
-                'userName' => 'jane.doe',
+        $payload = ['Operations' => [[
+            'op' => 'Replace',
+            'value' => [
                 self::ENTERPRISE . ':department' => 'Sales',
-            ]
-        );
+                self::ENTERPRISE => ['costCenter' => '4130'],
+                'displayName' => 'Jane Doe',
+            ],
+        ]]];
 
-        self::assertSame('jane.doe', $result['userName']);
-        self::assertSame(['department' => 'Sales'], $result[self::ENTERPRISE]);
-        self::assertArrayNotHasKey(self::ENTERPRISE . ':department', $result);
-    }
-
-    public function testFlatAndNestedKeysForSameSchemaMergeWithoutLoss(): void
-    {
-        // Flat key seeded first, then a nested object for the same schema: neither
-        // side's sub-attributes may be dropped (regression guard for the overwrite).
-        $result = $this->normalizer->normalize(
-            RequestNormalizerInterface::RESOURCE_USER,
-            'POST',
-            [
-                'userName' => 'jane.doe',
-                self::ENTERPRISE . ':department' => 'Sales',
-                self::ENTERPRISE => ['title' => 'Manager'],
-            ]
-        );
-
-        self::assertEqualsCanonicalizing(
-            ['department' => 'Sales', 'title' => 'Manager'],
-            $result[self::ENTERPRISE]
+        self::assertSame(
+            $payload,
+            $this->normalizer->normalize(RequestNormalizerInterface::RESOURCE_USER, 'PATCH', $payload)
         );
     }
 
-    public function testNestedAndFlatKeysForSameSchemaMergeRegardlessOfOrder(): void
-    {
-        // Same merge, opposite order (nested object first, then flat key).
-        $result = $this->normalizer->normalize(
-            RequestNormalizerInterface::RESOURCE_USER,
-            'POST',
-            [
-                'userName' => 'jane.doe',
-                self::ENTERPRISE => ['title' => 'Manager'],
-                self::ENTERPRISE . ':department' => 'Sales',
-            ]
-        );
-
-        self::assertEqualsCanonicalizing(
-            ['title' => 'Manager', 'department' => 'Sales'],
-            $result[self::ENTERPRISE]
-        );
-    }
-
-    public function testAlreadyNestedExtensionObjectPassesThrough(): void
+    #[DataProvider('nonPatchProvider')]
+    public function testTopLevelEnterpriseKeysPassThroughOnCreateAndReplace(string $method): void
     {
         $payload = [
             'userName' => 'jane.doe',
-            self::ENTERPRISE => ['department' => 'Sales'],
+            self::ENTERPRISE . ':department' => 'Sales',
+            self::ENTERPRISE => ['title' => 'Manager'],
         ];
 
         self::assertSame(
             $payload,
-            $this->normalizer->normalize(RequestNormalizerInterface::RESOURCE_USER, 'POST', $payload)
+            $this->normalizer->normalize(RequestNormalizerInterface::RESOURCE_USER, $method, $payload)
         );
     }
 
-    // --- Deviation 3: ADD and REPLACE are equivalent ----------------------
+    // --- Core-URN-qualified User attributes -> bare -------------------------
 
-    public function testAddAndReplaceOfSameAttributeProduceEquivalentValueShape(): void
+    #[DataProvider('coreUrnPathProvider')]
+    public function testCoreUrnPathIsStrippedToBareAttribute(string $path, string $expected): void
     {
-        $add = $this->normalizer->normalize(
+        $result = $this->normalizer->normalize(
             RequestNormalizerInterface::RESOURCE_USER,
             'PATCH',
-            ['Operations' => [['op' => 'add', 'path' => self::ENTERPRISE . ':department', 'value' => 'Ops']]]
-        );
-        $replace = $this->normalizer->normalize(
-            RequestNormalizerInterface::RESOURCE_USER,
-            'PATCH',
-            ['Operations' => [['op' => 'replace', 'path' => self::ENTERPRISE . ':department', 'value' => 'Ops']]]
+            ['Operations' => [['op' => 'Replace', 'path' => $path, 'value' => 'True']]]
         );
 
-        // Same target path + value; only the op verb differs (the core treats
-        // add/replace identically for single-valued attributes).
-        self::assertSame($add['Operations'][0]['path'], $replace['Operations'][0]['path']);
-        self::assertSame($add['Operations'][0]['value'], $replace['Operations'][0]['value']);
-        self::assertSame('add', $add['Operations'][0]['op']);
-        self::assertSame('replace', $replace['Operations'][0]['op']);
+        self::assertSame(['op' => 'Replace', 'path' => $expected, 'value' => 'True'], $result['Operations'][0]);
+    }
+
+    /**
+     * @return array<string,array{0:string,1:string}>
+     */
+    public static function coreUrnPathProvider(): array
+    {
+        return [
+            'colon' => [self::CORE . ':active', 'active'],
+            'dot' => [self::CORE . '.active', 'active'],
+            'sub-attribute' => [self::CORE . ':name.givenName', 'name.givenName'],
+            'filter + sub-attribute' => [self::CORE . ':emails[type eq "work"].value', 'emails[type eq "work"].value'],
+            'mixed case' => ['URN:IETF:params:SCIM:schemas:Core:2.0:user:active', 'active'],
+        ];
+    }
+
+    public function testPathlessCoreUrnKeysAreStripped(): void
+    {
+        $result = $this->normalizer->normalize(
+            RequestNormalizerInterface::RESOURCE_USER,
+            'PATCH',
+            ['Operations' => [[
+                'op' => 'Replace',
+                'value' => [
+                    self::CORE . ':active' => 'False',
+                    'displayName' => 'Jane Doe',
+                    self::ENTERPRISE . ':department' => 'Sales',
+                ],
+            ]]]
+        );
+
+        self::assertSame(
+            ['active' => 'False', 'displayName' => 'Jane Doe', self::ENTERPRISE . ':department' => 'Sales'],
+            $result['Operations'][0]['value']
+        );
+    }
+
+    #[DataProvider('nonPatchProvider')]
+    public function testTopLevelCoreUrnKeyIsStrippedOnCreateAndReplace(string $method): void
+    {
+        $result = $this->normalizer->normalize(
+            RequestNormalizerInterface::RESOURCE_USER,
+            $method,
+            ['userName' => 'jane.doe', self::CORE . '.active' => true]
+        );
+
+        self::assertSame(['userName' => 'jane.doe', 'active' => true], $result);
+    }
+
+    public function testBareCoreUrnPathWithBareKeysIsLeftForTheCore(): void
+    {
+        $payload = ['Operations' => [['op' => 'Replace', 'path' => self::CORE, 'value' => ['active' => 'False']]]];
+
+        self::assertSame(
+            $payload,
+            $this->normalizer->normalize(RequestNormalizerInterface::RESOURCE_USER, 'PATCH', $payload)
+        );
+    }
+
+    public function testBareCoreUrnPathHasItsObjectKeysStripped(): void
+    {
+        $result = $this->normalizer->normalize(
+            RequestNormalizerInterface::RESOURCE_USER,
+            'PATCH',
+            ['Operations' => [[
+                'op' => 'Replace',
+                'path' => self::CORE,
+                'value' => [self::CORE . '.active' => 'False', self::CORE . ':userName' => 'jane'],
+            ]]]
+        );
+
+        self::assertSame(
+            ['op' => 'Replace', 'path' => self::CORE, 'value' => ['active' => 'False', 'userName' => 'jane']],
+            $result['Operations'][0]
+        );
+    }
+
+    public function testCollidingKeysAreSplitIntoConsecutiveOpsInOrder(): void
+    {
+        $result = $this->normalizer->normalize(
+            RequestNormalizerInterface::RESOURCE_USER,
+            'PATCH',
+            ['Operations' => [
+                [
+                    'op' => 'Replace',
+                    'value' => [
+                        self::CORE . ':name.givenName' => 'A',
+                        'name' => ['givenName' => 'X', 'familyName' => 'Doe'],
+                        'name.givenName' => 'B',
+                    ],
+                ],
+                ['op' => 'Replace', 'path' => 'active', 'value' => false],
+            ]]
+        );
+
+        self::assertSame(
+            [
+                [
+                    'op' => 'Replace',
+                    'value' => ['name.givenName' => 'A', 'name' => ['givenName' => 'X', 'familyName' => 'Doe']],
+                ],
+                ['op' => 'Replace', 'value' => ['name.givenName' => 'B']],
+                ['op' => 'Replace', 'path' => 'active', 'value' => false],
+            ],
+            $result['Operations']
+        );
+    }
+
+    public function testCollidingComplexValuesKeepBothPartialUpdates(): void
+    {
+        $result = $this->normalizer->normalize(
+            RequestNormalizerInterface::RESOURCE_USER,
+            'PATCH',
+            ['Operations' => [[
+                'op' => 'Replace',
+                'path' => self::CORE,
+                'value' => [
+                    self::CORE . ':name' => ['givenName' => 'Jane'],
+                    'name' => ['familyName' => 'Doe'],
+                ],
+            ]]]
+        );
+
+        self::assertSame(
+            [
+                ['op' => 'Replace', 'path' => self::CORE, 'value' => ['name' => ['givenName' => 'Jane']]],
+                ['op' => 'Replace', 'path' => self::CORE, 'value' => ['name' => ['familyName' => 'Doe']]],
+            ],
+            $result['Operations']
+        );
+    }
+
+    public function testCoreUrnPathOnGroupResourceIsUntouched(): void
+    {
+        $payload = ['Operations' => [['op' => 'Replace', 'path' => self::CORE . ':displayName', 'value' => 'Ops']]];
+
+        self::assertSame(
+            $payload,
+            $this->normalizer->normalize(RequestNormalizerInterface::RESOURCE_GROUP, 'PATCH', $payload)
+        );
+    }
+
+    // --- Edge cases ---------------------------------------------------------
+
+    public function testRemoveWithCoreUrnPathIsStripped(): void
+    {
+        $result = $this->normalizer->normalize(
+            RequestNormalizerInterface::RESOURCE_USER,
+            'PATCH',
+            ['Operations' => [['op' => 'Remove', 'path' => self::CORE . ':title']]]
+        );
+
+        self::assertSame(['op' => 'Remove', 'path' => 'title'], $result['Operations'][0]);
+    }
+
+    public function testExtensionUrnContainingCoreIsUntouched(): void
+    {
+        $payload = ['Operations' => [
+            [
+                'op' => 'Replace',
+                'path' => 'urn:ietf:params:scim:schemas:extension:core:2.0:User:department',
+                'value' => 'X',
+            ],
+            ['op' => 'Replace', 'path' => 'urn:acme:core:2.0:User:active', 'value' => 'X'],
+        ]];
+
+        self::assertSame(
+            $payload,
+            $this->normalizer->normalize(RequestNormalizerInterface::RESOURCE_USER, 'PATCH', $payload)
+        );
+    }
+
+    public function testNonStringPathIsUntouched(): void
+    {
+        $payload = ['Operations' => [['op' => 'Replace', 'path' => 42, 'value' => [self::CORE . ':active' => 'X']]]];
+
+        self::assertSame(
+            $payload,
+            $this->normalizer->normalize(RequestNormalizerInterface::RESOURCE_USER, 'PATCH', $payload)
+        );
+    }
+
+    public function testOperationsOrderIsPreserved(): void
+    {
+        $result = $this->normalizer->normalize(
+            RequestNormalizerInterface::RESOURCE_USER,
+            'PATCH',
+            ['Operations' => [
+                ['op' => 'Replace', 'path' => 'active', 'value' => 'False'],
+                ['op' => 'Replace', 'path' => self::CORE . ':title', 'value' => 'Ex-Manager'],
+                ['op' => 'Add', 'path' => self::ENTERPRISE . ':department', 'value' => 'Sales'],
+                ['op' => 'Replace', 'path' => 'displayName', 'value' => 'Jane Doe'],
+            ]]
+        );
+
+        self::assertSame(
+            ['active', 'title', self::ENTERPRISE . ':department', 'displayName'],
+            array_column($result['Operations'], 'path')
+        );
     }
 
     // --- Deviation 2: group-member remove via value -> path filter ---------
@@ -251,7 +385,7 @@ class AzureRequestNormalizerTest extends TestCase
     public function testGroupMemberRemoveWithEmptyIdIsLeftForCoreToHandleByValue(): void
     {
         // An empty id can't be meaningfully embedded in a filter — bail out so the
-        // core removes only the listed members (never all).
+        // core handles the listed members by value.
         $payload = ['Operations' => [[
             'op' => 'remove',
             'path' => 'members',
@@ -267,7 +401,7 @@ class AzureRequestNormalizerTest extends TestCase
     public function testGroupMemberRemoveWithUnsafeIdIsLeftForCoreToHandleByValue(): void
     {
         // A `"` in the id can't be embedded in the filter — leave the op intact so
-        // the core removes only the listed members (never all).
+        // the core handles the listed members by value.
         $payload = ['Operations' => [[
             'op' => 'remove',
             'path' => 'members',
@@ -284,7 +418,7 @@ class AzureRequestNormalizerTest extends TestCase
     {
         // A member whose `value` is itself a structure (not a scalar id) can't be
         // embedded in a filter — bail out entirely so the whole op is left for the
-        // core, which removes only the listed members (never all).
+        // core, which handles the listed members by value.
         $payload = ['Operations' => [[
             'op' => 'remove',
             'path' => 'members',
@@ -305,6 +439,21 @@ class AzureRequestNormalizerTest extends TestCase
             $payload,
             $this->normalizer->normalize(RequestNormalizerInterface::RESOURCE_GROUP, 'PATCH', $payload)
         );
+    }
+
+    public function testGroupMemberRemoveWithEmptyValueListIsDropped(): void
+    {
+        // The core reads an empty list as "clear all"; Entra means "remove nobody".
+        $result = $this->normalizer->normalize(
+            RequestNormalizerInterface::RESOURCE_GROUP,
+            'PATCH',
+            ['Operations' => [
+                ['op' => 'Remove', 'path' => 'members', 'value' => []],
+                ['op' => 'Replace', 'path' => 'displayName', 'value' => 'Ops'],
+            ]]
+        );
+
+        self::assertSame([['op' => 'Replace', 'path' => 'displayName', 'value' => 'Ops']], $result['Operations']);
     }
 
     public function testPathlessGroupMemberRemoveThatClearsAllIsNotExpanded(): void
@@ -385,7 +534,7 @@ class AzureRequestNormalizerTest extends TestCase
         );
 
         self::assertSame('garbage', $result['Operations'][0]);
-        self::assertSame(['department' => 'X'], $result['Operations'][1]['value']);
+        self::assertSame(self::ENTERPRISE . ':department', $result['Operations'][1]['path']);
     }
 
     #[DataProvider('nonPatchProvider')]

@@ -2,9 +2,10 @@
 
 > Microsoft Entra ID SCIM provisioning for Magento 2 admin users.
 
-![License](https://img.shields.io/badge/license-OSL--3.0-green) ![Magento](https://img.shields.io/badge/Magento-2.4-orange) ![PHP](https://img.shields.io/badge/PHP-8.3--8.5-blue) ![Version](https://img.shields.io/badge/version-0.0.1-lightgrey)
+[![CI](https://github.com/dmlab-work/module-admin-scim-azure/actions/workflows/ci.yml/badge.svg)](https://github.com/dmlab-work/module-admin-scim-azure/actions/workflows/ci.yml) [![codecov](https://codecov.io/gh/dmlab-work/module-admin-scim-azure/graph/badge.svg)](https://codecov.io/gh/dmlab-work/module-admin-scim-azure) [![Packagist](https://img.shields.io/packagist/dt/dmlab/module-admin-scim-azure)](https://packagist.org/packages/dmlab/module-admin-scim-azure)
+![License](https://img.shields.io/badge/license-OSL--3.0-green) ![Magento](https://img.shields.io/badge/Magento-2.4-orange) ![PHP](https://img.shields.io/badge/PHP-8.3--8.5-blue) ![Version](https://img.shields.io/badge/version-0.2.0-lightgrey)
 
-A thin Microsoft Entra ID (formerly Azure AD) provider plugin for the [`admin-scim`](../module-admin-scim) SCIM 2.0 server. It normalizes Entra's non-standard SCIM behaviour and documents the Entra-side setup. Entra deviates from RFC 7644 in several documented ways, so this plugin is a request normalizer that absorbs those quirks plus an admin setup surface.
+A thin Microsoft Entra ID (formerly Azure AD) provider plugin for the `dmlab/module-admin-scim` (`^0.2.0`) SCIM 2.0 server. It canonicalizes Entra's remaining non-RFC request shapes and documents the Entra-side setup.
 
 ## Install
 
@@ -19,6 +20,7 @@ The single `require` pulls `dmlab/module-admin-scim` — the whole provisioning 
 ## Set up the Entra SCIM app
 
 1. In Magento, open **Stores → Configuration → DMLab → Admin SCIM**, enable Admin SCIM, and set a **Bearer Token**.
+   Set **Admin SCIM → Provider = azure** — required when several provider plugins are installed.
 2. Read the Tenant URL from **Stores → Configuration → DMLab → Admin SCIM → Microsoft Entra ID Setup**. It is this store's SCIM base URL, e.g. `https://your-host/admin-scim/v2`.
 3. In Entra, create an enterprise application, then under **Provisioning → Admin Credentials** enter:
 
@@ -31,29 +33,38 @@ The single `require` pulls `dmlab/module-admin-scim` — the whole provisioning 
 
 ## Supported provisioning actions
 
+Only SCIM-managed admins (created via SCIM) are touched.
+
 - **Create** — Entra pushes a new user → admin_user created.
-- **Update** — profile changes (sent as PATCH) → admin_user updated.
-- **Deactivate / reactivate** — sent by Entra as `active = false` / `active = true`.
-- **Group push** — group membership → role mapping (standard SCIM, handled by `admin-scim`).
+- **Update** — `userName`, `externalId`, `name` (`givenName`, `familyName`, `formatted`), `emails` and `active` change the admin. Other attributes (`displayName`, `title`, `preferredLanguage`, phone numbers, addresses, enterprise and other extension attributes) are accepted and ignored.
+- **Deactivate / reactivate** — Entra sends `active: "False"` / `"True"`, alone or batched with other changes. Unassigning the user or a soft delete in Entra deactivates.
+- **Delete** — a hard delete in Entra sends `DELETE /Users/{id}`, which hard-deletes the SCIM-managed admin.
+- **Group push** — group membership → role mapping; a member remove drops only the listed members.
 
 ## Entra deviations handled
 
-Entra does not send strictly RFC-compliant SCIM. This plugin's `AzureRequestNormalizer` rewrites each deviation before it reaches the core:
+Rewritten by `AzureRequestNormalizer` into the canonical RFC form:
 
-- **Flat complex-attribute PATCH** — Entra sends `"urn:…:User.attr"` (or `:attr`) flat instead of nesting the attribute inside its schema-extension object. Un-flattened to the nested form, in PATCH ops and POST/PUT bodies.
-- **ADD vs REPLACE inconsistency** — Entra uses `add` and `replace` interchangeably for the same single-valued attribute; both are accepted (the core already treats them identically per RFC §3.5.2.1).
-- **Group-member remove** — Entra puts the member in the op's `value` instead of a `path` filter (RFC §3.5.2.2); handled naively this can strip *every* member. Rewritten to a `members[value eq "<id>"]` filtered remove per member, so only the named member leaves.
-- **PATCH response** — the core answers `200` with the updated resource, which Entra accepts (a `204 No Content` is also acceptable to Entra, so no response-mode toggle is needed).
+- **Core-URN-qualified attributes** — `urn:ietf:params:scim:schemas:core:2.0:User:attr` (or `.attr`) in a PATCH `path`, a path-less `value` key or a POST/PUT key becomes the bare `attr`.
+- **Group-member remove by value** — Entra puts the members in the op's `value` instead of a `path` filter (RFC §3.5.2.2). Rewritten to one `members[value eq "<id>"]` remove per member; an empty `value` list removes nobody (the core would clear the group).
+
+Accepted natively by the core, passed through unchanged:
+
+- extension attributes (e.g. the enterprise User URN), flat or nested — ignored;
+- `emails[type eq "work"].value` — sets the email;
+- stringified booleans (`"False"`, `"True"`);
+- `Add` / `Replace` used interchangeably, capitalized op names;
+- PATCH answered with `200` and the updated resource, which Entra accepts.
 
 ## How it works
 
-Entra pushes SCIM 2.0 requests to the `admin-scim` endpoint. This plugin registers `AzureRequestNormalizer` into `admin-scim`'s `RequestNormalizerInterface` seam (di-merged under the `azure` key). It rewrites the deviations above and passes everything else through unchanged; the actual admin-user provisioning and role mapping happen in `admin-scim`.
+Entra pushes SCIM 2.0 requests to the `admin-scim` endpoint. This plugin registers `AzureRequestNormalizer` into `admin-scim`'s `RequestNormalizerInterface` seam under the provider code `azure`; the core invokes it only when the configured provider is `azure` (or it is the only registered normalizer and none is selected). It rewrites the shapes above and passes everything else through unchanged; provisioning and role mapping happen in `admin-scim`.
 
 ## Requirements
 
 - Magento **2.4.x**
 - PHP **8.3 – 8.5**
-- `dmlab/module-admin-scim` (installed automatically)
+- `dmlab/module-admin-scim` `^0.2.0` (installed automatically)
 
 ## License
 

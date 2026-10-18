@@ -1,0 +1,9 @@
+{
+    "schemas": ["urn:ietf:params:scim:api:messages:2.0:PatchOp"],
+    "Operations": [
+        {"op": "Add", "path": "urn:ietf:params:scim:schemas:extension:enterprise:2.0:User:employeeNumber", "value": "1001"},
+        {"op": "Replace", "path": "urn:ietf:params:scim:schemas:extension:enterprise:2.0:User:department", "value": "Sales"},
+        {"op": "Replace", "path": "urn:ietf:params:scim:schemas:extension:enterprise:2.0:User:manager", "value": "26118915-6090-4a24-a0d5-be7bc3e3e3f9"},
+        {"op": "Remove", "path": "urn:ietf:params:scim:schemas:extension:enterprise:2.0:User:manager"}
+    ]
+}

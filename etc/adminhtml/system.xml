@@ -2,6 +2,7 @@
 <!--
 /**
  * Copyright © DMLab. All rights reserved.
+ * Licensed under the Open Software License version 3.0 (OSL-3.0). See LICENSE.
  */
 -->
 <config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
@@ -9,7 +10,7 @@
     <system>
         <!-- Add an Entra setup-info block to admin-scim's section. -->
         <section id="dmlab_admin_scim">
-            <group id="azure" translate="label" type="text" sortOrder="60"
+            <group id="azure" translate="label comment" type="text" sortOrder="60"
                    showInDefault="1" showInWebsite="0" showInStore="0">
                 <label>Microsoft Entra ID Setup</label>
                 <comment>How to wire an Entra ID enterprise-app provisioning to this store's endpoint.</comment>

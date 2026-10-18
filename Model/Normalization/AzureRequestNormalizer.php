@@ -1,6 +1,7 @@
 <?php
 /**
  * Copyright © DMLab. All rights reserved.
+ * Licensed under the Open Software License version 3.0 (OSL-3.0). See LICENSE.
  */
 declare(strict_types=1);
 
@@ -11,40 +12,35 @@ use DmLab\AdminScim\Api\RequestNormalizerInterface;
 /**
  * Microsoft Entra ID provider-quirk normalizer for the `admin-scim` server.
  *
- * Entra's SCIM client has documented deviations from RFC 7644; this rewrites its
- * request bodies into strict-RFC shape before the core handles them:
+ * Canonicalizes two Entra shapes into the strict RFC form:
  *
- *  1. Flat complex-attribute paths — Entra addresses a schema-extension
- *     sub-attribute with the whole attribute flattened onto the path/key
- *     (`urn:…:User:department` or `urn:…:User.department`) instead of nesting it
- *     inside the extension object. Un-flattened to `{path: "urn:…:User", value:
- *     {department: …}}` (PATCH) or a nested `{"urn:…:User": {department: …}}`
- *     map (POST/PUT).
- *  2. Group-member remove via `value` — Entra puts the member(s) in the op's
- *     `value` (`{op: remove, path: "members", value: [{value: "42"}]}`) rather
- *     than a `path` filter. Handled naively (drop `path: members` ignoring
- *     `value`) that strips the *entire* group; rewritten to one
- *     `members[value eq "42"]` filtered remove per member so only the named
- *     member leaves.
- *  3. ADD vs REPLACE inconsistency — Entra uses `add` and `replace`
- *     interchangeably for the same attribute. The op verb is left intact: the
- *     core already treats them identically for the single-valued attributes it
- *     provisions (RFC §3.5.2.1), so both un-flatten to the same value shape.
+ *  1. Core-URN-qualified User attributes — `urn:ietf:params:scim:schemas:core:2.0:User:active`
+ *     (or `.active`) in a PATCH `path`, a path-less `value` key or a POST/PUT top-level key
+ *     becomes the bare `active` (also inside the object of a `path` equal to the core URN).
+ *  2. Group-member remove via `value` — `{op: remove, path: "members", value: [{value: "42"}]}`
+ *     becomes one `members[value eq "42"]` filtered remove per member; an empty list is dropped,
+ *     since the core would read it as "clear all members".
  *
- * The `204 No Content` PATCH response deviation is not a request concern and is
- * handled in the Entra setup surface (Task 4), not here.
+ * Extension paths and keys pass through untouched: the core accepts and ignores them, and
+ * nesting them produced a shape the core rejected.
  *
- * Pure and total: any payload that isn't one of the above is returned unchanged,
- * and it never throws on unexpected input.
+ * Pure and total: any other payload is returned unchanged, and it never throws.
  */
 class AzureRequestNormalizer implements RequestNormalizerInterface
 {
     /**
-     * A flat extension complex-attribute path/key: a SCIM schema URI ending in
-     * `:User` (base or enterprise), then `:` or `.`, then the sub-attribute.
-     * Group 1 = schema URI, group 2 = sub-attribute.
+     * Provider code: the di item key in `RequestNormalizerChain` `normalizers`. The core runs this
+     * normalizer only when `dmlab_admin_scim/general/provider` equals it, or when it is the only
+     * registered normalizer and no provider is selected.
      */
-    private const FLAT_EXTENSION_PATTERN = '/^(urn:[^\s]*:User)[.:]([^\s].*)$/i';
+    public const PROVIDER_CODE = 'azure';
+
+    private const CORE_USER_URN = 'urn:ietf:params:scim:schemas:core:2.0:User';
+
+    /**
+     * A core-URN-qualified User attribute: group 1 = the bare attribute path.
+     */
+    private const CORE_USER_ATTRIBUTE_PATTERN = '/^urn:ietf:params:scim:schemas:core:2\.0:User[:.](\S.*)$/i';
 
     /**
      * @inheritDoc
@@ -55,8 +51,7 @@ class AzureRequestNormalizer implements RequestNormalizerInterface
             return $this->normalizePatch($resourceType, $payload);
         }
 
-        // POST/PUT: un-flatten any flat extension keys carried at the top level.
-        return $this->unflattenMap($payload);
+        return $resourceType === self::RESOURCE_USER ? $this->stripCoreUrnKeys($payload) : $payload;
     }
 
     /**
@@ -82,17 +77,19 @@ class AzureRequestNormalizer implements RequestNormalizerInterface
                 continue;
             }
 
-            $expanded = $resourceType === self::RESOURCE_GROUP
-                ? $this->expandMemberRemove($operation)
-                : null;
-            if ($expanded !== null) {
-                foreach ($expanded as $rewritten) {
+            if ($resourceType === self::RESOURCE_GROUP) {
+                foreach ($this->expandMemberRemove($operation) ?? [$operation] as $rewritten) {
                     $operations[] = $rewritten;
                 }
                 continue;
             }
 
-            $operations[] = $this->unflattenOperation($operation);
+            $rewrittenOps = $resourceType === self::RESOURCE_USER
+                ? $this->stripCoreUrnOperation($operation)
+                : [$operation];
+            foreach ($rewrittenOps as $rewritten) {
+                $operations[] = $rewritten;
+            }
         }
         $payload[$key] = $operations;
 
@@ -103,9 +100,9 @@ class AzureRequestNormalizer implements RequestNormalizerInterface
      * Split an Entra group-member `remove` carrying members in `value` into one
      * `members[value eq "<id>"]` filtered remove per member.
      *
-     * Returns null (leave the op untouched) when it is not a member-remove-by-value
-     * or when a member id cannot be safely embedded in a filter — the core still
-     * removes only the listed members in that case, never all.
+     * Returns an empty list for an empty `value` list (removes nobody). Returns null (leave
+     * the op untouched) when it is not a member-remove-by-value or when a member id cannot be
+     * safely embedded in a filter — the core still removes only the listed members then.
      *
      * @param array<string,mixed> $operation
      * @return array<int,array<string,mixed>>|null
@@ -120,7 +117,7 @@ class AzureRequestNormalizer implements RequestNormalizerInterface
             return null;
         }
         $value = $operation['value'] ?? null;
-        if (!is_array($value) || $value === [] || !array_is_list($value)) {
+        if (!is_array($value) || !array_is_list($value)) {
             return null;
         }
 
@@ -143,47 +140,54 @@ class AzureRequestNormalizer implements RequestNormalizerInterface
     }
 
     /**
-     * Un-flatten a flat extension complex-attribute in a single PATCH operation.
+     * Strip the core User URN from a PATCH op's `path` or `value` map keys.
      *
-     * Handles the `path` form (`{path: "urn:…:User:department", value: v}` →
-     * `{path: "urn:…:User", value: {department: v}}`) and the path-less form
-     * (whose `value` is an attribute→value map with flat keys). Anything else is
-     * returned unchanged.
+     * The keys are stripped when the op is path-less or its `path` is the core URN itself. A key
+     * that collides after stripping starts a new op, so every value still applies in its order.
      *
      * @param array<string,mixed> $operation
-     * @return array<string,mixed>
+     * @return array<int,array<string,mixed>>
      */
-    private function unflattenOperation(array $operation): array
+    private function stripCoreUrnOperation(array $operation): array
     {
-        $path = isset($operation['path']) && is_string($operation['path']) ? trim($operation['path']) : '';
+        $path = $operation['path'] ?? '';
+        if (!is_string($path)) {
+            return [$operation];
+        }
+        if (trim($path) !== '' && strcasecmp(trim($path), self::CORE_USER_URN) !== 0) {
+            $operation['path'] = $this->bareCoreAttribute($path) ?? $path;
 
-        if ($path !== '' && array_key_exists('value', $operation)
-            && preg_match(self::FLAT_EXTENSION_PATTERN, $path, $m) === 1) {
-            $operation['path'] = $m[1];
-            $operation['value'] = [$m[2] => $operation['value']];
+            return [$operation];
+        }
+
+        $value = $operation['value'] ?? null;
+        if (!is_array($value) || array_is_list($value)) {
+            return [$operation];
+        }
+
+        $chunks = [[]];
+        foreach ($value as $key => $subValue) {
+            $key = is_string($key) ? $this->bareCoreAttribute($key) ?? $key : $key;
+            if (array_key_exists($key, $chunks[array_key_last($chunks)])) {
+                $chunks[] = [];
+            }
+            $chunks[array_key_last($chunks)][$key] = $subValue;
+        }
+
+        return array_map(static function (array $chunk) use ($operation): array {
+            $operation['value'] = $chunk;
 
             return $operation;
-        }
-
-        if ($path === '' && isset($operation['value']) && is_array($operation['value'])
-            && !array_is_list($operation['value'])) {
-            $operation['value'] = $this->unflattenMap($operation['value']);
-        }
-
-        return $operation;
+        }, $chunks);
     }
 
     /**
-     * Nest any flat extension keys of an attribute→value map.
+     * Replace core-URN-qualified keys of an attribute→value map with the bare attribute.
      *
-     * `{"urn:…:User:department": v}` → `{"urn:…:User": {department: v}}`, merging
-     * into an existing nested object for the same schema. Non-flat keys pass
-     * through. Total: a non-map value or unrecognized key is left as-is.
-     *
-     * @param array<string,mixed> $map
-     * @return array<string,mixed>
+     * @param array<mixed> $map
+     * @return array<mixed>
      */
-    private function unflattenMap(array $map): array
+    private function stripCoreUrnKeys(array $map): array
     {
         if (array_is_list($map)) {
             return $map;
@@ -191,27 +195,23 @@ class AzureRequestNormalizer implements RequestNormalizerInterface
 
         $result = [];
         foreach ($map as $key => $value) {
-            if (is_string($key) && preg_match(self::FLAT_EXTENSION_PATTERN, $key, $m) === 1) {
-                $schema = $m[1];
-                $existing = $result[$schema] ?? [];
-                if (!is_array($existing) || array_is_list($existing)) {
-                    $existing = [];
-                }
-                $existing[$m[2]] = $value;
-                $result[$schema] = $existing;
-                continue;
-            }
-            // A non-flat key (e.g. an already-nested extension object) for a schema
-            // that flat keys already seeded: merge rather than overwrite so neither
-            // side's sub-attributes are lost, regardless of iteration order.
-            if (isset($result[$key]) && is_array($result[$key]) && !array_is_list($result[$key])
-                && is_array($value) && !array_is_list($value)) {
-                $result[$key] = $value + $result[$key];
-                continue;
-            }
+            $key = is_string($key) ? $this->bareCoreAttribute($key) ?? $key : $key;
+            // A repeated key moves to its last position, keeping the core's sequential last-wins order.
+            unset($result[$key]);
             $result[$key] = $value;
         }
 
         return $result;
+    }
+
+    /**
+     * The bare attribute path of a core-URN-qualified User attribute, or null when it is not one.
+     *
+     * @param string $path
+     * @return string|null
+     */
+    private function bareCoreAttribute(string $path): ?string
+    {
+        return preg_match(self::CORE_USER_ATTRIBUTE_PATTERN, trim($path), $m) === 1 ? $m[1] : null;
     }
 }

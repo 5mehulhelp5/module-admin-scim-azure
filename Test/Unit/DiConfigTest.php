@@ -1,6 +1,7 @@
 <?php
 /**
  * Copyright © DMLab. All rights reserved.
+ * Licensed under the Open Software License version 3.0 (OSL-3.0). See LICENSE.
  */
 declare(strict_types=1);
 
@@ -46,6 +47,25 @@ class DiConfigTest extends TestCase
         }
 
         self::assertContains(AzureRequestNormalizer::class, $registered);
+    }
+
+    public function testAzureNormalizerIsKeyedByItsProviderCode(): void
+    {
+        $items = $this->xpath->query(sprintf(
+            '//type[@name="%s"]/arguments/argument[@name="normalizers"]/item',
+            RequestNormalizerChain::class
+        ));
+
+        self::assertNotFalse($items);
+
+        $names = [];
+        foreach ($items as $item) {
+            if (trim($item->textContent) === AzureRequestNormalizer::class) {
+                $names[] = $item->getAttribute('name');
+            }
+        }
+
+        self::assertSame([AzureRequestNormalizer::PROVIDER_CODE], $names);
     }
 
     public function testRegisteredNormalizerImplementsTheExtensionPoint(): void
